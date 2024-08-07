@@ -1,13 +1,34 @@
 #Requires -Version 3.0
-# Make sure to fill in all the required variables before running the script
-# Also make sure the AppID used corresponds to an app with sufficient permissions, as follows:
-#    User.Read.All to enumerate all users in the tenant
-#    Sites.ReadWrite.All to return all the item sharing details
-#    (optional) Directory.Read.All to obtain a domain list and check whether an item is shared externally
-
+<#
+.SYNOPSIS
+    Enumerate and save OneDrive file sharing report. Useful for finding OneDrive's that have been shared out by an attacer maliciously, and as a genearl OneDrive report.
+.DESCRIPTION
+    TODO
+.PARAMETER TenantID
+    TODO
+.PARAMETER AppID
+    ApplicationID for Enterprise App. Find under App Overview > Properties in Entra console. Entra > Home > Enterprise applications | All applications > Overview
+.PARAMETER ClientSecret
+    TODO
+.PARAMETER ExpandFolders
+    TODO
+.PARAMETER Depth
+    TODO
+.EXAMPLE
+    Graph_ODFB_shared_files.ps1 -TenantID <String> -AppID <String> -ClientSecret <String> -ExpandFolders <Boolean> -Depth <Int>
+#>
 
 [CmdletBinding()] #Make sure we can use -Verbose
-Param([switch]$ExpandFolders,[int]$depth)
+Param(
+    [Parameter(Mandatory=$true)]
+    [String]$TenantID,
+    [Parameter(Mandatory=$true)]
+    [String]$AppID,
+    [Parameter(Mandatory=$true)]
+    [String]$ClientSecret,
+    [switch]$ExpandFolders,
+    [int]$Depth
+)
 
 function processChildren {
 
@@ -18,8 +39,8 @@ function processChildren {
     [Parameter(Mandatory=$true)][string]$URI,
     #Use the ExpandFolders switch to specify whether to expand folders and include their items in the output.
     [switch]$ExpandFolders,
-    #Use the Depth parameter to specify the folder depth for expansion/inclusion of items.
-    [int]$depth)
+    #Use the Depth parameter to specify the folder Depth for expansion/inclusion of items.
+    [int]$Depth)
 
     $URI = "$URI/children"
     $children = @()
@@ -41,7 +62,7 @@ function processChildren {
 
     #Process Folders
     foreach ($folder in $cFolders) {
-        $output += (processFolder -User $User -folder $folder -ExpandFolders:$ExpandFolders -depth $depth -Verbose:$VerbosePreference)
+        $output += (processFolder -User $User -folder $folder -ExpandFolders:$ExpandFolders -depth $Depth -Verbose:$VerbosePreference)
     }
 
     #Process Files
@@ -66,8 +87,8 @@ function processFolder {
     [Parameter(Mandatory=$true)]$folder,
     #Use the ExpandFolders switch to specify whether to expand folders and include their items in the output.
     [switch]$ExpandFolders,
-    #Use the Depth parameter to specify the folder depth for expansion/inclusion of items.
-    [int]$depth)
+    #Use the Depth parameter to specify the folder Depth for expansion/inclusion of items.
+    [int]$Depth)
 
     #prepare the output object
     $fileinfo = New-Object psobject
@@ -93,10 +114,10 @@ function processFolder {
     $fileinfo | Add-Member -MemberType NoteProperty -Name "ItemPath" -Value $folder.webUrl
 
     #Since this is a folder item, check for any children, depending on the script parameters
-    if (($folder.folder.childCount -gt 0) -and $ExpandFolders -and ((3 - $folder.parentReference.path.Split("/").Count + $depth) -gt 0)) {
+    if (($folder.folder.childCount -gt 0) -and $ExpandFolders -and ((3 - $folder.parentReference.path.Split("/").Count + $Depth) -gt 0)) {
         Write-Verbose "Folder $($folder.Name) has child items"
         $uri = "https://graph.microsoft.com/v1.0/users/$($user.id)/drive/items/$($folder.id)"
-        $folderItems = processChildren -User $user -URI $uri -ExpandFolders:$ExpandFolders -depth $depth -Verbose:$VerbosePreference
+        $folderItems = processChildren -User $user -URI $uri -ExpandFolders:$ExpandFolders -depth $Depth -Verbose:$VerbosePreference
     }
 
     #handle the output
@@ -185,7 +206,7 @@ function getPermissions {
 
 function Renew-Token {
     #prepare the request
-    $url = 'https://login.microsoftonline.com/' + $tenantId + '/oauth2/v2.0/token'
+    $url = 'https://login.microsoftonline.com/' + $TenantID + '/oauth2/v2.0/token'
 
     $Scopes = New-Object System.Collections.Generic.List[string]
     $Scope = "https://graph.microsoft.com/.default"
@@ -193,8 +214,8 @@ function Renew-Token {
 
     $body = @{
         grant_type = "client_credentials"
-        client_id = $appID
-        client_secret = $client_secret
+        client_id = $AppID
+        ClientSecret = $ClientSecret
         scope = $Scopes
     }
 
@@ -259,11 +280,7 @@ function Invoke-GraphApiRequest {
 #==========================================================================
 #Main script starts here
 #==========================================================================
-
-#Variables to configure
-$tenantID = "tenant.onmicrosoft.com" #your tenantID or tenant root domain
-$appID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" #the GUID of your app. For best result, use app with Sites.ReadWrite.All scope granted.
-$client_secret = "verylongsecurestring" #client secret for the app
+Connect-MgGraph -NoWelcome -Scopes "User.Read.All","Sites.ReadWrite.All","Directory.Read.All"
 
 Renew-Token
 
@@ -272,7 +289,7 @@ $domains = (Invoke-GraphApiRequest -uri "https://graph.microsoft.com/v1.0/domain
 #$domains = @("xxx.com","yyy.com")
 
 #Adjust the input parameters
-if ($ExpandFolders -and ($depth -le 0)) { $depth = 0 }
+if ($ExpandFolders -and ($Depth -le 0)) { $Depth = 0 }
 
 #Get a list of all users, make sure to handle multiple pages
 $GraphUsers = @()
@@ -308,12 +325,11 @@ foreach ($user in $GraphUsers) {
     if (!$UserDrive -or ($UserDrive.folder.childCount -eq 0)) { Write-Verbose "No items to report on for user $($user.userPrincipalName), skipping..."; continue }
 
     #enumerate items in the drive and prepare the output
-    $pOutput = processChildren -User $user -URI $uri -ExpandFolders:$ExpandFolders -depth $depth
+    $pOutput = processChildren -User $user -URI $uri -ExpandFolders:$ExpandFolders -depth $Depth
     $Output += $pOutput
 }
 
-#Return the output
-#$Output | select OneDriveOwner,Name,ItemType,Shared,ExternallyShared,Permissions,ItemPath | ? {$_.Shared -eq "Yes"} | Ogv -PassThru
+# Write Output
 $global:varODFBSharedItems = $Output | select OneDriveOwner,Name,ItemType,Shared,ExternallyShared,Permissions,ItemPath | ? {$_.Shared -eq "Yes"}
-#$Output | select OneDriveOwner,Name,ItemType,Shared,ExternallyShared,Permissions,ItemPath | Export-Csv -Path "$((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss'))_ODFBSharedItems.csv" -NoTypeInformation -Encoding UTF8 -UseCulture
+$Output | select OneDriveOwner,Name,ItemType,Shared,ExternallyShared,Permissions,ItemPath | Export-Csv -Path "$((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss'))_ODFBSharedItems.csv" -NoTypeInformation -Encoding UTF8 -UseCulture
 return $global:varODFBSharedItems
